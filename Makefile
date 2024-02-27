@@ -148,6 +148,9 @@ UPROGS=\
 	$U/_usertests\
 	$U/_grind\
 	$U/_wc\
+	$U/_sleep\
+	$U/_pingpong\
+	$U/_primes\
 	$U/_zombie\
 
 
