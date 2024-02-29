@@ -695,3 +695,11 @@ procdump(void)
     printf("\n");
   }
 }
+
+int count_nproc(void) {
+  int i, count=0;
+  for(i = 0; i < NPROC; i++)
+    if(proc[i].state != UNUSED)
+      count++;
+  return count;
+}
