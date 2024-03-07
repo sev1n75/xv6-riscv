@@ -20,6 +20,7 @@ static void wakeup1(struct proc *chan);
 static void freeproc(struct proc *p);
 
 extern char trampoline[]; // trampoline.S
+extern pagetable_t kernel_pagetable;  // vm.c
 
 // initialize the proc table at boot time.
 void
@@ -31,15 +32,6 @@ procinit(void)
   for(p = proc; p < &proc[NPROC]; p++) {
       initlock(&p->lock, "proc");
 
-      // Allocate a page for the process's kernel stack.
-      // Map it high in memory, followed by an invalid
-      // guard page.
-      char *pa = kalloc();
-      if(pa == 0)
-        panic("kalloc");
-      uint64 va = KSTACK((int) (p - proc));
-      kvmmap(va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
-      p->kstack = va;
   }
   kvminithart();
 }
@@ -93,6 +85,7 @@ static struct proc*
 allocproc(void)
 {
   struct proc *p;
+  char *pa;
 
   for(p = proc; p < &proc[NPROC]; p++) {
     acquire(&p->lock);
@@ -105,6 +98,17 @@ allocproc(void)
   return 0;
 
 found:
+  p->kpagetable = kvm_pagetable();
+  // Allocate a page for the process's kernel stack.
+  // Map it high in memory, followed by an invalid
+  // guard page.
+  pa = kalloc();
+  if(pa == 0)
+    panic("kalloc");
+  uint64 va = KSTACK((int) (p - proc));
+  kvmmap(p->kpagetable, va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
+  kvmmap(kernel_pagetable, va, (uint64)pa, PGSIZE, PTE_R | PTE_W);  // to make two kernel pagetable identical
+  p->kstack = va;
   p->pid = allocpid();
 
   // Allocate a trapframe page.
@@ -141,6 +145,14 @@ freeproc(struct proc *p)
   p->trapframe = 0;
   if(p->pagetable)
     proc_freepagetable(p->pagetable, p->sz);
+  if(p->kstack) {
+    uvmunmap(p->kpagetable, p->kstack, PGSIZE/PGSIZE, 0);
+    uvmunmap(kernel_pagetable, p->kstack, PGSIZE/PGSIZE, 1);
+  }
+  if(p->kpagetable)
+    kvm_freepagetable(p->kpagetable);
+  p->kpagetable = 0;
+  p->kstack = 0;
   p->pagetable = 0;
   p->sz = 0;
   p->pid = 0;
@@ -473,11 +485,16 @@ scheduler(void)
         // before jumping back to us.
         p->state = RUNNING;
         c->proc = p;
+        w_satp(MAKE_SATP(p->kpagetable));
+        sfence_vma();
         swtch(&c->context, &p->context);
 
         // Process is done running for now.
         // It should have changed its p->state before coming back.
         c->proc = 0;
+        // to satisfy "scheduler() should use kernel_pagetable when no process is running."
+        w_satp(MAKE_SATP(kernel_pagetable));
+        sfence_vma();
 
         found = 1;
       }
