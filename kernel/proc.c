@@ -124,6 +124,7 @@ found:
     release(&p->lock);
     return 0;
   }
+  proc_kpagetable_trapframe(p);
 
   // Set up new context to start executing at forkret,
   // which returns to user space.
@@ -143,6 +144,8 @@ freeproc(struct proc *p)
   if(p->trapframe)
     kfree((void*)p->trapframe);
   p->trapframe = 0;
+  if(p->kpagetable)
+    proc_clear_kpagetable(p->kpagetable, p->sz);
   if(p->pagetable)
     proc_freepagetable(p->pagetable, p->sz);
   if(p->kstack) {
@@ -207,6 +210,23 @@ proc_freepagetable(pagetable_t pagetable, uint64 sz)
   uvmfree(pagetable, sz);
 }
 
+// map current proc->>trapframe to kpagetable
+void proc_kpagetable_trapframe(struct proc *p){
+  // map the trapframe just below TRAMPOLINE, for trampoline.S.
+  if(mappages(p->kpagetable, TRAPFRAME, PGSIZE, (uint64)(p->trapframe), PTE_R | PTE_W) < 0)
+    panic("proc_kpagetable_trapframe");
+}
+
+// clear user space and trapframe
+// not free kpagetable
+// better be called before proc_freepagetable？not sure
+void proc_clear_kpagetable(pagetable_t kpagetable, uint64 sz) {
+  uvmunmap(kpagetable, TRAPFRAME, 1, 0);
+
+  if(sz > 0)
+    uvmunmap(kpagetable, 0, PGROUNDUP(sz)/PGSIZE, 0);
+}
+
 // a user program that calls exec("/init")
 // od -t xC initcode
 uchar initcode[] = {
@@ -230,7 +250,8 @@ userinit(void)
   
   // allocate one user page and copy init's instructions
   // and data into it.
-  uvminit(p->pagetable, initcode, sizeof(initcode));
+  // and map to kpagetable
+  uvminit(p->pagetable, p->kpagetable, initcode, sizeof(initcode));
   p->sz = PGSIZE;
 
   // prepare for the very first "return" from kernel to user.
@@ -255,11 +276,12 @@ growproc(int n)
 
   sz = p->sz;
   if(n > 0){
-    if((sz = uvmalloc(p->pagetable, sz, sz + n)) == 0) {
+    if((sz = uvmalloc(p->pagetable, p->kpagetable, sz, sz + n)) == 0) {
       return -1;
     }
   } else if(n < 0){
-    sz = uvmdealloc(p->pagetable, sz, sz + n);
+    uvmdealloc(p->kpagetable, sz, sz + n, 0);
+    sz = uvmdealloc(p->pagetable, sz, sz + n, 1);
   }
   p->sz = sz;
   return 0;
@@ -280,7 +302,7 @@ fork(void)
   }
 
   // Copy user memory from parent to child.
-  if(uvmcopy(p->pagetable, np->pagetable, p->sz) < 0){
+  if(uvmcopy(p->pagetable, np->pagetable, np->kpagetable, p->sz) < 0){
     freeproc(np);
     release(&np->lock);
     return -1;

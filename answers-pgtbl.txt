@@ -1,0 +1,1 @@
+when srcva < p->sz buf len is less than 0
