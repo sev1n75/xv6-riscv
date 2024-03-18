@@ -7,6 +7,7 @@
 #include "defs.h"
 
 struct spinlock tickslock;
+struct trapframe alarm_trapframe;
 uint ticks;
 
 extern char trampoline[], uservec[], userret[];
@@ -75,6 +76,17 @@ usertrap(void)
 
   if(p->killed)
     exit(-1);
+
+  if(p->alarm_state.interval && which_dev == 2) {
+    p->alarm_state.nticks++;
+    if(p->alarm_state.finish && p->alarm_state.nticks >= p->alarm_state.interval) {
+      // save user regs
+      alarm_trapframe = *p->trapframe;
+      p->trapframe->epc = p->alarm_state.alarm_handler;
+      p->alarm_state.nticks = 0;
+      p->alarm_state.finish = 0;
+    }
+  }
 
   // give up the CPU if this is a timer interrupt.
   if(which_dev == 2)

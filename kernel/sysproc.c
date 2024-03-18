@@ -7,6 +7,8 @@
 #include "spinlock.h"
 #include "proc.h"
 
+extern struct trapframe alarm_trapframe;
+
 uint64
 sys_exit(void)
 {
@@ -95,4 +97,25 @@ sys_uptime(void)
   xticks = ticks;
   release(&tickslock);
   return xticks;
+}
+
+uint64 sys_sigalarm(void) {
+  int ticks;
+  void (*handler)();
+  if(argint(0, &ticks) < 0)
+    return -1;
+  if(argaddr(1, (uint64*)&handler) < 0)
+    return -1; 
+  if(ticks < 0)
+    return -1;
+  myproc()->alarm_state.interval = ticks;
+  myproc()->alarm_state.alarm_handler= (uint64)handler;
+  return ticks;
+}
+
+uint64 sys_sigreturn(void) {
+  *myproc()->trapframe = alarm_trapframe;
+  myproc()->alarm_state.finish = 1;
+  usertrapret();
+  return 0;
 }
