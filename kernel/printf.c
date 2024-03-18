@@ -140,5 +140,7 @@ void backtrace() {
   while(currfp <= stack_top) {
     printf("%p\n", *(uint64*)(currfp-8));
     currfp = *(uint64*)(currfp-0x10);
+    if(*(uint64*)(currfp-8) <= PLIC)
+      break;
   }
 }
