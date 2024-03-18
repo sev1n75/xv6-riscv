@@ -1,0 +1,11 @@
+1. a0~a7, a2 holds 13 when calling `printf` in main.
+
+2. `f` and `g` is called in compiler.
+
+3. printf is located at 0x628
+
+4. `ra` is 0x38
+
+5. out put is "HE110 Worid", if big-endian `i = 0x726c6400`. `57616` need not to be changed.
+
+6. after "y=", it will print `(int)$a2`, because the 2nd argment of format strings is `a2`.
