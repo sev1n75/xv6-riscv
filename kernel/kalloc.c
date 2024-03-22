@@ -14,6 +14,8 @@ void freerange(void *pa_start, void *pa_end);
 extern char end[]; // first address after kernel.
                    // defined by kernel.ld.
 
+uint8* phy_ref_cnt;
+
 struct run {
   struct run *next;
 };
@@ -23,11 +25,43 @@ struct {
   struct run *freelist;
 } kmem;
 
+void inc_ref_cnt(uint64 pa) {
+  acquire(&kmem.lock);
+  if(pa >= (uint64)end && pa < PHYSTOP)
+    phy_ref_cnt[(pa-(uint64)end)>>12]++;
+  release(&kmem.lock);
+}
+
+uint8 dec_ref_cnt(uint64 pa) {
+  uint8 result=0;
+  if(get_ref_cnt(pa) == 0)
+    panic("dec_ref_cnt");
+  acquire(&kmem.lock);
+  //if(pa >= (uint64)end && pa < PHYSTOP)
+    result = --phy_ref_cnt[(pa-(uint64)end)>>12];
+  release(&kmem.lock);
+  return result;
+}
+
+uint8 get_ref_cnt(uint64 pa) {
+  uint8 result = 1;
+  acquire(&kmem.lock);
+  if(pa >= (uint64)end && pa < PHYSTOP)
+    result = phy_ref_cnt[(pa-(uint64)end)>>12];
+  release(&kmem.lock);
+  return result;
+}
+
 void
 kinit()
 {
   initlock(&kmem.lock, "kmem");
-  freerange(end, (void*)PHYSTOP);
+
+  // caculate the need of ref counts
+  int bytes = (PHYSTOP-PGROUNDUP((uint64)end))>>12;
+  phy_ref_cnt = (uint8*)end;
+
+  freerange((void*)end+bytes, (void*)PHYSTOP);
 }
 
 void
@@ -72,8 +106,10 @@ kalloc(void)
 
   acquire(&kmem.lock);
   r = kmem.freelist;
-  if(r)
+  if(r) {
     kmem.freelist = r->next;
+    phy_ref_cnt[((uint64)r-(uint64)end)>>12] = 0;
+  }
   release(&kmem.lock);
 
   if(r)
