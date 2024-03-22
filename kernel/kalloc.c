@@ -37,8 +37,7 @@ uint8 dec_ref_cnt(uint64 pa) {
   if(get_ref_cnt(pa) == 0)
     panic("dec_ref_cnt");
   acquire(&kmem.lock);
-  //if(pa >= (uint64)end && pa < PHYSTOP)
-    result = --phy_ref_cnt[(pa-(uint64)end)>>12];
+  result = --phy_ref_cnt[(pa-(uint64)end)>>12]; // called by uvmunmap pa is in range
   release(&kmem.lock);
   return result;
 }
