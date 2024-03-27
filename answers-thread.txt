@@ -1,0 +1,9 @@
+就像 LEC 10 对 `freelist` 的讲解一样
+
+当两个线程同时调用 `insert()` 时对于两个线程 `struct entry **p` 是一样的，
+
+```txt
+thread1: *p = e 这时头节点应该已经被更新成 e
+
+thread2: 在 thread 1 执行 *p = e 后再执行 *p = e,此时会覆盖掉 thread1 的 e，即丢失了 thread1 的 key。
+```
