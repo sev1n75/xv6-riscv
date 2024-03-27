@@ -18,16 +18,33 @@ struct run {
   struct run *next;
 };
 
-struct {
+struct kmem{
   struct spinlock lock;
   struct run *freelist;
-} kmem;
+};
+
+#define NMEM NCPU
+
+struct kmem kmems[NMEM];
+char name[NMEM][6];
 
 void
 kinit()
 {
-  initlock(&kmem.lock, "kmem");
-  freerange(end, (void*)PHYSTOP);
+  int id;
+  push_off();
+  id = cpuid();
+
+  name[id][0] = 'k';
+  name[id][1] = 'm';
+  name[id][2] = 'e';
+  name[id][3] = 'm';
+  name[id][4] = '0'+id;
+  name[id][5] = '\0';
+  initlock(&kmems[id].lock, name[id]);
+  if(!id)
+    freerange((void*)end, (void*)PHYSTOP);
+  pop_off();
 }
 
 void
@@ -55,11 +72,34 @@ kfree(void *pa)
   memset(pa, 1, PGSIZE);
 
   r = (struct run*)pa;
+  push_off();
+  int id = cpuid();
 
-  acquire(&kmem.lock);
-  r->next = kmem.freelist;
-  kmem.freelist = r;
-  release(&kmem.lock);
+  acquire(&kmems[id].lock);
+  r->next = kmems[id].freelist;
+  kmems[id].freelist = r;
+  release(&kmems[id].lock);
+  pop_off();
+}
+
+// steal from othre freelists and not give back.
+// Return a pointer as kalloc() if success.
+// Return 0 if other freelists is empty.
+struct run* steal() {
+  struct run * r = 0;
+  // 遍历其他 list
+  int i;
+  for(i = 0; i < NMEM; i++) { //这里不能限制 i != id, 因为很可能在 kalloc 和 steal 之间被中断，freelist 又有内存了
+    acquire(&kmems[i].lock);
+    r = kmems[i].freelist;
+    if(r) {
+      kmems[i].freelist = r->next;
+      release(&kmems[i].lock);
+      break;
+    }
+    release(&kmems[i].lock);
+  }
+  return r;
 }
 
 // Allocate one 4096-byte page of physical memory.
@@ -69,12 +109,18 @@ void *
 kalloc(void)
 {
   struct run *r;
+  push_off();
+  int id = cpuid();
+  pop_off();
 
-  acquire(&kmem.lock);
-  r = kmem.freelist;
+  acquire(&kmems[id].lock);
+  r = kmems[id].freelist;
   if(r)
-    kmem.freelist = r->next;
-  release(&kmem.lock);
+    kmems[id].freelist = r->next;
+  release(&kmems[id].lock);
+
+  if(!r)
+    r = steal();
 
   if(r)
     memset((char*)r, 5, PGSIZE); // fill with junk
