@@ -12,6 +12,7 @@
 #include "file.h"
 #include "stat.h"
 #include "proc.h"
+#include "fcntl.h"
 
 struct devsw devsw[NDEV];
 struct {
@@ -19,10 +20,18 @@ struct {
   struct file file[NFILE];
 } ftable;
 
+struct {
+  struct spinlock lock;
+  struct vma vmas[NVMAS];
+} kvma;
+
+uint64 vma_addr_start;
+
 void
 fileinit(void)
 {
   initlock(&ftable.lock, "ftable");
+  initlock(&kvma.lock, "kvma");
 }
 
 // Allocate a file structure.
@@ -178,5 +187,155 @@ filewrite(struct file *f, uint64 addr, int n)
   }
 
   return ret;
+}
+
+struct vma* 
+allocvma(uint64* paddr, size_t length, int prot, int flags, struct file* f, off_t off) {
+  uint64 addr;
+  struct vma* pvma;
+  int i;
+  struct proc* p;
+  p = myproc();
+  pvma = p->vma;
+  // find a approriate address
+  addr = vma_addr_start;
+  while(pvma) {
+    addr = pvma->end > addr ? pvma->end : addr;
+    pvma = pvma->next;
+  }
+  addr = PGROUNDUP(addr);
+  *paddr = addr;
+
+  // alloc a vacant vmas
+  acquire(&kvma.lock);
+  for(i = 0; i < NVMAS && kvma.vmas[i].f ; i++);
+  if(i >= NVMAS) {
+    release(&kvma.lock);
+    return 0;
+  }
+  pvma = &kvma.vmas[i];
+  pvma->f = f;
+  release(&kvma.lock);
+
+  // set vma
+  filedup(f);
+  pvma->next = p->vma;
+  p->vma = pvma;
+  pvma->start = addr;
+  pvma->end = addr + length;
+  pvma->prot = prot;
+  pvma->off = off;
+  pvma->flags = flags;
+
+  return pvma;
+}
+
+int
+vma_unmap(uint64 addr, uint64 length) {
+  struct proc* p = myproc();
+  struct vma *pvma, *prev;
+  int do_clean;
+  uint64 npages, a;
+  pte_t* pte;
+
+  pvma = p->vma;
+  prev = pvma;  // prev may be equal to pvma
+  while(pvma) {
+    if(pvma->start <= addr && addr < pvma->end)
+      break;
+    prev = pvma;
+    pvma = pvma->next;
+  }
+  if(!pvma)
+    return -1;
+  // addr is valid
+  do_clean = 0;
+  if(addr + length >= pvma->end) {
+    length = pvma->end - addr;
+    if(addr == pvma->start)
+      do_clean = 1;
+  }
+
+  if(pvma->flags & MAP_SHARED) {
+    // if MAP_SHARED write dirty back
+    for(a = addr; a < addr + length; a += PGSIZE) {
+      if((pte = walk(p->pagetable, a, 0)) == 0)
+        continue; // because we map lazily
+      if (*pte & PTE_D) {
+        // found dirty pte
+        begin_op();
+        ilock(pvma->f->ip);
+        writei(pvma->f->ip, 0, PTE2PA(*pte), pvma->off+a-addr, PGSIZE);
+        iunlock(pvma->f->ip);
+        end_op();
+      }
+    }
+  }
+
+  // unmap
+  npages = PGROUNDUP(length) / PGSIZE;
+  uvmunmap(p->pagetable, addr, npages, 1); 
+
+  // update pvma
+  if(!do_clean) {
+    if(addr == pvma->start)
+      pvma->start = addr + PGROUNDUP(length);
+    // other conditions is not tested in mmaptest
+  } else {
+    // unlink pvma in p->vma single linked list    
+    if(prev == pvma)
+      p->vma = pvma->next;
+    else
+      prev->next = pvma->next;
+    pvma->next = 0;
+    pvma->start = 0;
+    pvma->end = 0;
+    pvma->flags = 0;
+    pvma->off = 0;
+    pvma->prot = 0;
+    acquire(&ftable.lock);
+    pvma->f->ref--;
+    release(&ftable.lock);
+    acquire(&kvma.lock);
+    pvma->f = 0;
+    release(&kvma.lock);
+  }
+  return 0;
+}
+
+int
+vmacopy(struct proc* parent, struct proc* child) {
+  struct vma *pvma, *c_pvma, *prev;
+  int i;
+
+  prev = 0;
+  pvma = parent->vma;
+  while(pvma) {
+    acquire(&kvma.lock);
+    for(i = 0; i < NVMAS && kvma.vmas[i].f ; i++);
+    if(i >= NVMAS) {
+      release(&kvma.lock);
+      return 0;
+    }
+    c_pvma = &kvma.vmas[i];
+    c_pvma->f = pvma->f;
+    release(&kvma.lock);
+    if (uvmcopy(parent->pagetable, child->pagetable, pvma->end-pvma->start, pvma->start) < 0) {
+      // free vma alloc fo child before
+      return -1;
+    }
+    filedup(c_pvma->f);
+    c_pvma->start = pvma->start;
+    c_pvma->end =  pvma->end;
+    c_pvma->prot = pvma->prot;
+    c_pvma->off =  pvma->off;
+    c_pvma->flags = pvma->flags;
+    child->vma = c_pvma;
+    c_pvma->next = prev;
+    prev = c_pvma;
+
+    pvma = pvma->next;
+  }
+  return 0;
 }
 

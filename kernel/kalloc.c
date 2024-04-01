@@ -13,6 +13,7 @@ void freerange(void *pa_start, void *pa_end);
 
 extern char end[]; // first address after kernel.
                    // defined by kernel.ld.
+extern uint64 vma_addr_start;
 
 struct run {
   struct run *next;
@@ -34,9 +35,15 @@ void
 freerange(void *pa_start, void *pa_end)
 {
   char *p;
+  uint64 npages;
   p = (char*)PGROUNDUP((uint64)pa_start);
-  for(; p + PGSIZE <= (char*)pa_end; p += PGSIZE)
+  npages = 0;
+  for(; p + PGSIZE <= (char*)pa_end; p += PGSIZE) {
     kfree(p);
+    npages++;
+  }
+  vma_addr_start = (npages + 1000) * PGSIZE + 0x200000000;
+  //printf("npages: %d\nvma_addr_start: %p\nMAXVA: %p", npages, vma_addr_start, MAXVA);
 }
 
 // Free the page of physical memory pointed at by v,

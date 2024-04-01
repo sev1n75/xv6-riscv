@@ -3,6 +3,9 @@
 #include "memlayout.h"
 #include "riscv.h"
 #include "spinlock.h"
+#include "sleeplock.h"
+#include "fs.h"
+#include "file.h"
 #include "proc.h"
 #include "defs.h"
 
@@ -275,7 +278,7 @@ fork(void)
   }
 
   // Copy user memory from parent to child.
-  if(uvmcopy(p->pagetable, np->pagetable, p->sz) < 0){
+  if(uvmcopy(p->pagetable, np->pagetable, p->sz, 0) < 0){
     freeproc(np);
     release(&np->lock);
     return -1;
@@ -301,6 +304,12 @@ fork(void)
   pid = np->pid;
 
   np->state = RUNNABLE;
+
+  if(p->vma && vmacopy(p, np) < 0) {
+    freeproc(np);
+    release(&np->lock);
+    return -1;
+  }
 
   release(&np->lock);
 
@@ -340,9 +349,15 @@ void
 exit(int status)
 {
   struct proc *p = myproc();
+  struct vma** ppvma = &p->vma;
 
   if(p == initproc)
     panic("init exiting");
+
+  // unmap mmapped files
+  while(*ppvma)
+    vma_unmap((*ppvma)->start, (*ppvma)->end - (*ppvma)->start);
+
 
   // Close all open files.
   for(int fd = 0; fd < NOFILE; fd++){

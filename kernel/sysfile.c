@@ -484,3 +484,48 @@ sys_pipe(void)
   }
   return 0;
 }
+
+uint64
+sys_mmap() {
+
+  uint64 length, off, addr;
+  int prot, flags;
+  struct file *f;
+  struct vma *pvma;
+  if(argaddr(0, &addr) < 0 || argaddr(1, &length) < 0 || argaddr(5, &off) < 0 ||
+    argint(2, &prot) < 0 || argint(3, &flags) < 0 ||argfd(4, 0, &f) < 0 )
+    return -1;
+
+  // check if addr is valid
+  // mmaptest use only mmap(0, ...)
+  // remain to be finished when addr is not 0
+  if(addr)
+    return -1;
+
+  if((!f->readable && prot&PROT_READ) || (flags & MAP_SHARED && !f->writable && prot&PROT_WRITE))
+    return -1;
+
+  ilock(f->ip);
+  if(off >= f->ip->size) {
+    iunlock(f->ip);
+    return -1;
+  }
+  iunlock(f->ip);
+
+  if((pvma = allocvma(&addr, length, prot, flags, f, off)) == 0)
+    return -1;
+
+  myproc()->vma = pvma;
+
+  return addr;
+}
+
+uint64
+sys_munmap() {
+  uint64 addr, length;
+  if(argaddr(0, &addr) < 0 || argaddr(1, &length) < 0)
+    return -1;
+  if((addr % PGSIZE))
+    return -1;
+  return vma_unmap(addr, length);
+}

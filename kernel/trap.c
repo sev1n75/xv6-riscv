@@ -3,6 +3,9 @@
 #include "memlayout.h"
 #include "riscv.h"
 #include "spinlock.h"
+#include "sleeplock.h"
+#include "fs.h"
+#include "file.h"
 #include "proc.h"
 #include "defs.h"
 
@@ -65,6 +68,44 @@ usertrap(void)
     intr_on();
 
     syscall();
+  } else if(r_scause() == 13 || r_scause() == 15){
+    uint64 val = r_stval();
+    char* mem;
+    int perm;
+  
+    struct vma *pvma = p->vma;
+    // if val is inside the vma
+    while(pvma) {
+      if(pvma->start <= val && val < pvma->end)
+        break;
+      pvma = pvma->next;
+    }
+    if(!pvma) {
+      printf("usertrap(): access unvalid page with scause: %d pid=%d\n", r_scause(), p->pid);
+      printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
+      p->killed = 1;
+    }
+
+    else {
+      perm = pvma->prot << 1;
+      // alloc the page which cause fault 
+      mem = kalloc();
+      if(mem == 0){
+        kfree(mem);
+        p->killed = 1;
+      }
+      val = PGROUNDDOWN(val);
+      memset(mem, 0, PGSIZE);
+      if(mappages(p->pagetable, val, PGSIZE, (uint64)mem, perm|PTE_U) != 0){
+        kfree(mem);
+        p->killed = 1;
+      }
+      // read the inode, to the new mem
+      ilock(pvma->f->ip); 
+      readi(pvma->f->ip, 0, (uint64)mem, pvma->off+val-pvma->start, PGSIZE);
+      iunlock(pvma->f->ip);
+    }
+
   } else if((which_dev = devintr()) != 0){
     // ok
   } else {
